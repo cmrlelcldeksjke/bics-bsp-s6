@@ -3,8 +3,8 @@ use ieee.std_logic_1164.all;
 
 entity counter is
     port (
-		clock: in std_ulogic;
-		reset: in std_ulogic;
+        clock: in std_ulogic;
+        reset: in std_ulogic;
         count_out: out natural range 0 to 9
     );
 end;
