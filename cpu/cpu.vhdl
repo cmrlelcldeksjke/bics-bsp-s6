@@ -5,7 +5,9 @@ use ieee.numeric_std.all;
 entity cpu is
 	port (
 		clock: in std_logic;
-		reset: in std_logic
+		reset: in std_logic;
+		switches: in std_logic_vector(15 downto 0);
+		leds: out std_logic_vector(15 downto 0)
 	);
 end entity;
 
@@ -27,6 +29,11 @@ architecture rtl of cpu is
 	-- negative, zero, carry, overflow
 	signal flags: std_ulogic_vector(3 downto 0);
 
+	type boot_sector_type is array (natural range <>) of std_ulogic_vector(WORD_SIZE-1 downto 0);
+	constant BOOT_SECTOR: boot_sector_type := (
+		B"001000_00000_00001_0000000000000001", -- subi R1,R0,1 (set R1 to full 1)
+		B"101011_00000_00001_0000000000000100"  -- store R1,-3(R1) (switch on the leds)
+	);
 
 	function fetch_byte(mem: memory_type; address: address_type) return std_ulogic_vector is
 	begin
@@ -54,6 +61,11 @@ architecture rtl of cpu is
 begin
 	registers(0) <= to_signed(0, REGISTER_SIZE);
 
+	memory(2**ADDRESS_BUS_SIZE - 8) <= switches(15 downto 8);
+	memory(2**ADDRESS_BUS_SIZE - 7) <= switches(7 downto 0);
+	leds(15 downto 8) <= memory(2**ADDRESS_BUS_SIZE - 4);
+	leds(7 downto 0) <= memory(2**ADDRESS_BUS_SIZE - 3);
+
 	process (clock, reset)
 		variable instruction: std_ulogic_vector(WORD_SIZE-1 downto 0);
 		variable opcode: std_ulogic_vector(5 downto 0);
@@ -77,8 +89,13 @@ begin
 			flags <= x"0";
 			-- "downto 1" because registers(0) is set elsewhere,
 			-- we don't want to also set it here
-			for i in NUM_REGISTERS-1 downto 1 loop
-				registers(i) <= to_signed(0, REGISTER_SIZE);
+			registers(NUM_REGISTERS-1 downto 1) <= (NUM_REGISTERS-1 downto 1 => to_signed(0, REGISTER_SIZE));
+
+			-- copy the boot sector from its ROM to start of memory
+			-- FIXME "for signal: .cpu_tb(testbench).cpu@cpu(rtl).memory(65528)(7)
+			-- ghdl:error: several sources for unresolved signal"
+			for i in BOOT_SECTOR'range loop
+				store_word(memory, i*4, BOOT_SECTOR(i));
 			end loop;
 		elsif rising_edge(clock) then
 			instruction := fetch_word(memory, to_integer(program_counter));
@@ -87,10 +104,10 @@ begin
 
 			case opcode is
 				when "000000" => -- R-type, operation also depends on funct_code
-					register_s_index := to_integer(unsigned(instruction(25 downto 21)));
-					register_t_index := to_integer(unsigned(instruction(20 downto 16)));
-					register_d_index := to_integer(unsigned(instruction(15 downto 11)));
-					shift_amount := to_integer(unsigned(instruction(10 downto 6)));
+					register_s_index := to_integer(u_unsigned(instruction(25 downto 21)));
+					register_t_index := to_integer(u_unsigned(instruction(20 downto 16)));
+					register_d_index := to_integer(u_unsigned(instruction(15 downto 11)));
+					shift_amount := to_integer(u_unsigned(instruction(10 downto 6)));
 					funct_code := instruction(5 downto 0);
 
 					case funct_code is
@@ -103,10 +120,10 @@ begin
 						when "000110" => -- shift right
 							registers(register_d_index) <= registers(register_t_index) srl to_integer(registers(register_s_index));
 						when "001000" => -- jump register
-							program_counter <= unsigned(registers(register_s_index));
+							program_counter <= u_unsigned(registers(register_s_index));
 						when "001001" => -- jump and link register
 							registers(register_d_index) <= u_signed(program_counter + 4);
-							program_counter <= unsigned(registers(register_s_index));
+							program_counter <= u_unsigned(registers(register_s_index));
 						when "100000" => -- add
 							registers(register_d_index) <= registers(register_s_index) + registers(register_t_index);
 						when "100010" => -- sub
@@ -120,50 +137,50 @@ begin
 						when others => -- invalid funct_code, we ignore it
 					end case;
 				when "000010" | "000011" => -- J-type
-					jump_target := unsigned(instruction(25 downto 0));
+					jump_target := u_unsigned(instruction(25 downto 0));
 
 					case opcode is
 						when "000010" => -- jump
-							program_counter <= program_counter(31 downto 28) & jump_target & "00";
+							program_counter <= program_counter(63 downto 28) & jump_target & "00";
 						when "000011" => -- jump and link
 							registers(31) <= u_signed(program_counter + 4);
-							program_counter <= program_counter(31 downto 28) & jump_target & "00";
+							program_counter <= program_counter(63 downto 28) & jump_target & "00";
 						when others => -- cannot happen
 					end case;
 				when others => -- I-type
-					register_s_index := to_integer(unsigned(instruction(25 downto 21)));
-					register_t_index := to_integer(unsigned(instruction(20 downto 16)));
-					immediate := signed(instruction(15 downto 0));
+					register_s_index := to_integer(u_unsigned(instruction(25 downto 21)));
+					register_t_index := to_integer(u_unsigned(instruction(20 downto 16)));
+					immediate := u_signed(instruction(15 downto 0));
 
 					case opcode is
 						when "000100" => -- beq
 							if registers(register_s_index) = registers(register_t_index) then
-								program_counter <= unsigned(signed(program_counter) + 4 + (31 downto 18 => immediate(15), 17 downto 2 => immediate, 1 downto 0 => '0'));
+								program_counter <= u_unsigned(u_signed(program_counter) + 4 + (63 downto 18 => immediate(15), 17 downto 2 => immediate, 1 downto 0 => '0'));
 							end if;
 						when "000101" => -- bneq
 							if registers(register_s_index) /= registers(register_t_index) then
-								program_counter <= unsigned(signed(program_counter) + 4 + (31 downto 18 => immediate(15), 17 downto 2 => immediate, 1 downto 0 => '0'));
+								program_counter <= u_unsigned(u_signed(program_counter) + 4 + (63 downto 18 => immediate(15), 17 downto 2 => immediate, 1 downto 0 => '0'));
 							end if;
 						when "001000" => -- addi
-							registers(register_t_index) <= registers(register_s_index) + (31 downto 16 => immediate(15), 15 downto 0 => immediate);
+							registers(register_t_index) <= registers(register_s_index) + (63 downto 16 => immediate(15), 15 downto 0 => immediate);
 						when "001001" => -- subi
 							-- Note: normally this opcode is addiu in MIPS
-							registers(register_t_index) <= registers(register_s_index) - (31 downto 16 => immediate(15), 15 downto 0 => immediate);
+							registers(register_t_index) <= registers(register_s_index) - (63 downto 16 => immediate(15), 15 downto 0 => immediate);
 						when "001010" => -- bless
 							-- Note: normally this opcode is slti in MIPS
 							if registers(register_s_index) < registers(register_t_index) then
-								program_counter <= unsigned(signed(program_counter) + 4 + (31 downto 18 => immediate(15), 17 downto 2 => immediate, 1 downto 0 => '0'));
+								program_counter <= u_unsigned(u_signed(program_counter) + 4 + (63 downto 18 => immediate(15), 17 downto 2 => immediate, 1 downto 0 => '0'));
 							end if;
 						when "001100" => -- andi
-							registers(register_t_index) <= registers(register_s_index) and (31 downto 16 => '0', 15 downto 0 => immediate);
+							registers(register_t_index) <= registers(register_s_index) and (63 downto 16 => '0', 15 downto 0 => immediate);
 						when "001101" => -- ori
-							registers(register_t_index) <= registers(register_s_index) or (31 downto 16 => '0', 15 downto 0 => immediate);
+							registers(register_t_index) <= registers(register_s_index) or (63 downto 16 => '0', 15 downto 0 => immediate);
 						when "001110" => -- xori
-							registers(register_t_index) <= registers(register_s_index) xor (31 downto 16 => '0', 15 downto 0 => immediate);
+							registers(register_t_index) <= registers(register_s_index) xor (63 downto 16 => '0', 15 downto 0 => immediate);
 						when "100011" => -- load
-							registers(register_t_index) <= signed(fetch_word(memory, to_integer(registers(register_s_index) + (31 downto 16 => immediate(15), 15 downto 0 => immediate))));
+							registers(register_t_index) <= u_signed(fetch_word(memory, to_integer(registers(register_s_index) + (63 downto 16 => immediate(15), 15 downto 0 => immediate))));
 						when "101011" => -- store
-							store_word(memory, to_integer(registers(register_s_index) + (31 downto 16 => immediate(15), 15 downto 0 => immediate)), std_ulogic_vector(registers(register_t_index)));
+							store_word(memory, to_integer(registers(register_s_index) + (63 downto 16 => immediate(15), 15 downto 0 => immediate)), std_ulogic_vector(registers(register_t_index)));
 						when others => -- invalid opcode, we ignore it
 					end case;
 			end case;
