@@ -51,6 +51,17 @@ architecture rtl of cpu is
 		mem((address+3) mod 2**ADDRESS_BUS_SIZE) <= value(7 downto 0);
 	end store_word;
 
+	procedure register_add(signal result: inout signed; op1: in signed; op2: in signed; signal my_flags: inout std_logic_vector) is
+		variable tmp: signed(REGISTER_SIZE downto 0);
+	begin
+		tmp := (REGISTER_SIZE => op1(REGISTER_SIZE-1), REGISTER_SIZE-1 downto 0 => op1) + (REGISTER_SIZE => op1(REGISTER_SIZE-1), REGISTER_SIZe-1 downto 0 => op2);
+		result <= tmp(REGISTER_SIZE-1 downto 0);
+		my_flags(3) <= tmp(REGISTER_SIZE-1); -- negative
+		my_flags(2) <= tmp(REGISTER_SIZE-1 downto 0) = to_signed(0, REGISTER_SIZE); -- zero
+		my_flags(1) <= tmp(REGISTER_SIZE); -- carry
+		--my_flags(0) <= -- overflow
+	end register_add;
+
 begin
 	leds(15 downto 8) <= memory(2**ADDRESS_BUS_SIZE - 8);
 	leds(7 downto 0) <= memory(2**ADDRESS_BUS_SIZE - 7);
