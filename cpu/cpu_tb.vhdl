@@ -8,11 +8,12 @@ architecture testbench of cpu_tb is
 	signal clock: std_logic := '0';
 	signal reset: std_logic := '0';
 	signal switches: std_logic_vector(15 downto 0);
+	signal buttons: std_logic_vector(3 downto 0);
 	signal leds: std_logic_vector(15 downto 0);
 	constant PROPAGATION_DELAY: time := 1 ms;
 begin
 	cpu: entity work.cpu
-		port map (clock => clock, reset => reset, switches => switches, leds => leds);
+		port map (clock => clock, reset => reset, switches => switches, buttons => buttons, leds => leds);
 
 	clock <= not clock after 250 ms;
 	reset <= '1', '0' after 20 ns;

@@ -5,8 +5,13 @@ use ieee.numeric_std.all;
 entity cpu is
 	port (
 		clock: in std_logic;
-		reset: in std_logic;
+		reset: in std_logic; -- middle button
 		switches: in std_logic_vector(15 downto 0);
+
+		-- buttons around the middle button
+		-- from 3 to 0, the buttons are: north, west, south, east
+		buttons: in std_logic_vector(3 downto 0);
+
 		leds: out std_logic_vector(15 downto 0)
 	);
 end entity;
@@ -28,10 +33,35 @@ architecture rtl of cpu is
 	-- negative, zero, carry, overflow
 	signal flags: std_logic_vector(3 downto 0);
 
+	constant IO_SECTOR_START: natural := 256; -- at which address do I/O mapped addresses begin
+
 	type boot_sector_type is array (natural range <>) of std_logic_vector(INSTRUCTION_SIZE-1 downto 0);
+	-- the boot sector assumes all registers are initially 0
 	constant BOOT_SECTOR: boot_sector_type := (
 		B"001001_00000_00001_0000000000000001", -- subi R1,R0,1 (set R1 to full 1)
-		B"101011_00001_00001_1111111111111001"  -- store R1,-7(R1) (switch on the leds)
+		B"101011_00000_00001_0000000100000100", -- store R1,260(R0) (switch on the leds)
+		-- begin loop, while west button not pressed
+		B"100011_00000_00010_0000000100001000", -- load R2,264(R0) (load status of buttons and switches into R2)
+		B"001100_00010_00011_0000_0100_00000000", -- andi R3,R2,0x0400 (get status of west button in R3)
+		B"000101_00011_00000_0000000000111111", -- bneq R3,R0,63 (if west button is pressed, jump out of bootloader. This is relative addressing, we're at address 4, jumping to 63 gives us (4+1+63)*4 = 68*4 = 272)
+		B"001100_00010_00011_0000_0001_00000000", -- andi R3,R2,0x0100 (get status of east button in R3)
+		B"000100_00011_00000_0000000000001001", -- beq R3,R0,9 (if east button is pressed)
+		-- begin if
+		B"000101_00100_00000_0000000000000011", -- bneq R4,R0,3 (if R4 = 0 / if we're editing the high halfword)
+		-- begin if 2
+		B"000000_00000_00010_00101_10000_000010", -- shift right R5,R2,16 (store status of switches into R5)
+		B"000000_00000_00101_00101_10000_000000", -- shift left R5,R5,16 (put them in the high halfword of R5)
+		B"000100_00000_00000_0000000000000100", -- beq R0,R0,4 (end if, skip else part)
+		-- else 2 (we're editing the low halfword)
+		B"000000_00000_00010_00110_10000_000010", -- shift right R6,R2,16 (store status of switches into R6)
+		B"000000_00101_00110_00101_00000_100100", -- and R5,R5,R6 (put them in the low halfword of R5)
+		B"101011_00111_00101_0000000100010000", -- store R5,272(R7) (store this newly formed instruction in memory)
+		B"001000_00111_00111_0000000000000001", -- addi R7,R7,1 (R7++)
+		-- end if 2
+		B"001110_00100_00100_0000000000000001", -- xori R4,R4,1 (negate R4)
+		-- end if
+		B"000010_00000000000000000000000010" -- jump 2 (repeat loop)
+		-- end loop
 	);
 
 	function fetch_word(mem: memory_type; address_in: unsigned) return std_logic_vector is
@@ -63,11 +93,16 @@ architecture rtl of cpu is
 	end register_add;
 
 begin
-	memory(2**ADDRESS_BUS_SIZE - 12) <= "0000" & flags(3 downto 0);
-	leds(15 downto 8) <= memory(2**ADDRESS_BUS_SIZE - 8);
-	leds(7 downto 0) <= memory(2**ADDRESS_BUS_SIZE - 7);
-	memory(2**ADDRESS_BUS_SIZE - 4) <= switches(15 downto 8);
-	memory(2**ADDRESS_BUS_SIZE - 3) <= switches(7 downto 0);
+	-- word 0-3
+	memory(IO_SECTOR_START + 0) <= "0000" & flags(3 downto 0);
+	-- word 4-7
+	leds(15 downto 8) <= memory(IO_SECTOR_START + 4);
+	leds(7 downto 0) <= memory(IO_SECTOR_START + 5);
+	-- word 8-11
+	memory(IO_SECTOR_START + 8) <= switches(15 downto 8);
+	memory(IO_SECTOR_START + 9) <= switches(7 downto 0);
+	memory(IO_SECTOR_START + 10) <= "0000" & buttons;
+	-- word 12-15 reserved
 
 	process (clock, reset)
 		variable instruction: std_logic_vector(INSTRUCTION_SIZE-1 downto 0);
@@ -95,7 +130,7 @@ begin
 			memory(0 to 2**ADDRESS_BUS_SIZE - 5) <= (0 to 2**ADDRESS_BUS_SIZE - 5 => std_logic_vector(to_unsigned(0, BYTE_SIZE)));
 
 			for i in BOOT_SECTOR'range loop
-				store_word(memory, to_unsigned(i, ADDRESS_BUS_SIZE)*4, BOOT_SECTOR(i));
+				store_word(memory, to_unsigned(i*4, ADDRESS_BUS_SIZE), BOOT_SECTOR(i));
 			end loop;
 		elsif rising_edge(clock) then
 			instruction := fetch_word(memory, program_counter);
