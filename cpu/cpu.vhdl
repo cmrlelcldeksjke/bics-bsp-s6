@@ -24,7 +24,7 @@ architecture rtl of cpu is
 	type memory_type is array (natural range <>) of std_logic_vector;
 	signal memory: memory_type(0 to 2**ADDRESS_BUS_SIZE - 1)(BYTE_SIZE-1 downto 0);
 
-	constant REGISTER_SIZE: natural := ADDRESS_SIZE;
+	constant REGISTER_SIZE: natural := 64;
 	constant NUM_REGISTERS: natural := 32;
 	type register_array_type is array (natural range <>) of signed;
 	signal registers: register_array_type(NUM_REGISTERS-1 downto 0)(REGISTER_SIZE-1 downto 0);
@@ -64,21 +64,68 @@ architecture rtl of cpu is
 		-- end loop
 	);
 
-	function fetch_word(mem: memory_type; address_in: unsigned) return std_logic_vector is
+	impure function fetch_byte(address_in: unsigned) return std_logic_vector is
 		variable address: natural;
 	begin
 		address := to_integer(address_in mod 2**ADDRESS_BUS_SIZE);
-		return mem(address mod 2**ADDRESS_BUS_SIZE) & mem((address+1) mod 2**ADDRESS_BUS_SIZE) & mem((address+2) mod 2**ADDRESS_BUS_SIZE) & mem((address+3) mod 2**ADDRESS_BUS_SIZE);
+		case address is
+			when 0 to 255 => return x"00"; -- boot sector, should never happen
+
+			when 256 => return "0000" & flags;
+			when 257 to 259 => return x"00"; -- reserved
+
+			when 260 => return leds(15 downto 8);
+			when 261 => return leds(7 downto 0);
+			when 262 to 263 => return x"00"; -- reserved
+
+			when 264 => return switches(15 downto 8);
+			when 265 => return switches(7 downto 0);
+			when 266 => return "0000" & buttons;
+			when 267 => return x"00"; -- reserved
+
+			when 268 to 271 => return x"00"; -- reserved
+
+			when others => return memory(address - 272);
+		end case;
+	end fetch_byte;
+
+	impure function fetch_word(address_in: unsigned) return std_logic_vector is
+		variable address: natural;
+	begin
+		address := to_integer(address_in);
+		case address is
+			when 0 to 255 => return BOOT_SECTOR(address / 4);
+			when others => return fetch_byte(address_in) & fetch_byte(address_in + 1) & fetch_byte(address_in + 2) & fetch_byte(address_in + 3);
+		end case;
 	end fetch_word;
 
-	procedure store_word(signal mem: inout memory_type; address_in: in unsigned; value: in std_logic_vector(INSTRUCTION_SIZE-1 downto 0)) is
+	procedure store_byte(address_in: in unsigned; value: in std_logic_vector(BYTE_SIZE-1 downto 0); signal mem: inout memory_type; signal leds_in: inout std_logic_vector) is
 		variable address: natural;
 	begin
 		address := to_integer(address_in mod 2**ADDRESS_BUS_SIZE);
-		mem(address mod 2**ADDRESS_BUS_SIZE) <= value(31 downto 24);
-		mem((address+1) mod 2**ADDRESS_BUS_SIZE) <= value(23 downto 16);
-		mem((address+2) mod 2**ADDRESS_BUS_SIZE) <= value(15 downto 8);
-		mem((address+3) mod 2**ADDRESS_BUS_SIZE) <= value(7 downto 0);
+		case address is
+			when 0 to 255 => -- boot sector
+
+			when 256 to 259 => -- flags
+
+			when 260 => leds_in(15 downto 8) <= value;
+			when 261 => leds_in(7 downto 0) <= value;
+			when 262 to 263 => -- reserved
+
+			when 264 to 267 => -- switches and buttons
+
+			when 268 to 271 => -- reserved
+
+			when others => mem(address - 272) <= value;
+		end case;
+	end store_byte;
+
+	procedure store_word(address: in unsigned; value: in std_logic_vector(INSTRUCTION_SIZE-1 downto 0); signal mem: inout memory_type; signal leds_in: inout std_logic_vector) is
+	begin
+		store_byte(address, value(31 downto 24), mem, leds_in);
+		store_byte(address + 1, value(23 downto 16), mem, leds_in);
+		store_byte(address + 2, value(15 downto 8), mem, leds_in);
+		store_byte(address + 3, value(7 downto 0), mem, leds_in);
 	end store_word;
 
 	procedure register_add(result: inout signed; op1: in signed; op2: in signed; signal my_flags: inout std_logic_vector) is
@@ -93,17 +140,6 @@ architecture rtl of cpu is
 	end register_add;
 
 begin
-	-- word 0-3
-	memory(IO_SECTOR_START + 0) <= "0000" & flags(3 downto 0);
-	-- word 4-7
-	leds(15 downto 8) <= memory(IO_SECTOR_START + 4);
-	leds(7 downto 0) <= memory(IO_SECTOR_START + 5);
-	-- word 8-11
-	memory(IO_SECTOR_START + 8) <= switches(15 downto 8);
-	memory(IO_SECTOR_START + 9) <= switches(7 downto 0);
-	memory(IO_SECTOR_START + 10) <= "0000" & buttons;
-	-- word 12-15 reserved
-
 	process (clock, reset)
 		variable instruction: std_logic_vector(INSTRUCTION_SIZE-1 downto 0);
 		variable opcode: std_logic_vector(5 downto 0);
@@ -124,16 +160,10 @@ begin
 	begin
 		if reset then
 			program_counter <= to_unsigned(0, ADDRESS_SIZE);
-			flags <= x"0";
-			registers(NUM_REGISTERS-1 downto 0) <= (NUM_REGISTERS-1 downto 0 => to_signed(0, REGISTER_SIZE));
-			-- TODO is this a good idea ? program counter needs 0 for a no-op, otherwise you get uninitialized as instruction
-			memory(0 to 2**ADDRESS_BUS_SIZE - 5) <= (0 to 2**ADDRESS_BUS_SIZE - 5 => std_logic_vector(to_unsigned(0, BYTE_SIZE)));
-
-			for i in BOOT_SECTOR'range loop
-				store_word(memory, to_unsigned(i*4, ADDRESS_BUS_SIZE), BOOT_SECTOR(i));
-			end loop;
+			flags <= "0000";
+			registers <= (NUM_REGISTERS-1 downto 0 => to_signed(0, REGISTER_SIZE));
 		elsif rising_edge(clock) then
-			instruction := fetch_word(memory, program_counter);
+			instruction := fetch_word(program_counter);
 			opcode := instruction(31 downto 26);
 			program_counter <= program_counter + 4;
 
@@ -255,9 +285,9 @@ begin
 							flags(3) <= registers(register_t_index)(REGISTER_SIZE-1); -- negative
 							flags(2) <= '1' when registers(register_t_index) = to_signed(0, REGISTER_SIZE) else '0'; -- zero
 						when "100011" => -- load
-							registers(register_t_index) <= signed(fetch_word(memory, unsigned(registers(register_s_index) + (63 downto 16 => immediate(15), 15 downto 0 => immediate))));
+							registers(register_t_index)(31 downto 0) <= signed(fetch_word(unsigned(registers(register_s_index) + (63 downto 16 => immediate(15), 15 downto 0 => immediate))));
 						when "101011" => -- store
-							store_word(memory, unsigned(registers(register_s_index) + (63 downto 16 => immediate(15), 15 downto 0 => immediate)), std_logic_vector(registers(register_t_index)(31 downto 0)));
+							store_word(unsigned(registers(register_s_index) + (63 downto 16 => immediate(15), 15 downto 0 => immediate)), std_logic_vector(registers(register_t_index)(31 downto 0)), memory, leds);
 						when others => -- invalid opcode, we ignore it
 					end case;
 			end case;

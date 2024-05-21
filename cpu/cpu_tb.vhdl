@@ -18,6 +18,9 @@ begin
 	clock <= not clock after 250 ms;
 	reset <= '1', '0' after 20 ns;
 
+	switches <= x"0000";
+	buttons <= x"0";
+
 	main: process
 		variable num_iterations: natural range 0 to 20 := 0;
 	begin
